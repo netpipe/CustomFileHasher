@@ -5,20 +5,19 @@
 #include <QLineEdit>
 #include <QLabel>
 #include <QVBoxLayout>
-#include <QHBoxLayout>
+#include <QComboBox>
 #include <QFileDialog>
 #include <QFile>
 #include <QCryptographicHash>
 #include <QMessageBox>
-#include <QComboBox>
 #include <QTextStream>
 #include <QDragEnterEvent>
 #include <QMimeData>
+#include <QStringList>
 #include <QMap>
 #include <QVector>
-#include <QStringList>
 
-// ----- Wordlist for plate encoder -----
+// ----- Wordlist -----
 static QMap<QChar, QVector<QString>> letterWordMap{
     {'A', {"APPLE","ATOM","ARROW","ACORN"}},
     {'B', {"BEAR","BOX","BUBBLE","BRIDGE"}},
@@ -68,13 +67,58 @@ QString makeWordHash(const QByteArray &hash){
     QChar keyA = QChar('A' + a);
     QChar keyB = QChar('A' + b);
 
+    if(!letterWordMap.contains(keyA) || !letterWordMap.contains(keyB))
+        return "UNKNOWN-UNKNOWN";
+
     QVector<QString> listA = letterWordMap[keyA];
     QVector<QString> listB = letterWordMap[keyB];
+
+    if(listA.isEmpty() || listB.isEmpty()) return "UNKNOWN-UNKNOWN";
 
     QString wordA = listA[a % listA.size()];
     QString wordB = listB[b % listB.size()];
 
     return QString("%1-%2-%3").arg(wordA).arg(wordB).arg(num);
+}
+
+QString decodePhraseToPlate(const QString &phrase)
+{
+    QString plate;
+
+    QStringList words = phrase.split("-", QString::SkipEmptyParts);
+
+    for(int i = 0; i < words.size(); i++){
+        QString word = words[i].toUpper();
+
+        // Find which letter’s list contains this word
+        QChar foundLetter = '?';
+
+        for(auto it = letterWordMap.begin(); it != letterWordMap.end(); ++it){
+            const QVector<QString> &list = it.value();
+            for(const QString &entry : list){
+                if(entry == word){
+                    foundLetter = it.key();
+                    break;
+                }
+            }
+            if(foundLetter != '?') break;
+        }
+
+        if(foundLetter == '?'){
+            // Unknown word → skip or insert placeholder
+            continue;
+        }
+
+        // Reverse number mapping: A→0, B→1, …, J→9
+        if(foundLetter >= 'A' && foundLetter <= 'J'){
+            int digit = foundLetter.unicode() - QChar('A').unicode();
+            plate += QString::number(digit);
+        } else {
+            plate += foundLetter;
+        }
+    }
+
+    return plate;
 }
 
 
@@ -83,25 +127,35 @@ QString encodePlateToPhrase(const QString &plate){
     for(int i=0;i<plate.size();i++){
         QChar c = plate[i].toUpper();
 
-        // If digit, convert to letter (0-9 → A-J) or custom offset
+        // Map digit to letter (0->A, 1->B, ..., 9->J)
         if(c.isDigit()){
             int num = c.digitValue();
-            // Example: shift digit into A-Z (0->A, 1->B, ..., 9->J)
             c = QChar('A' + (num % 26));
         }
 
-        if(letterWordMap.contains(c)){
-            QVector<QString> wlist = letterWordMap[c];
-            int idx = (i*7) % wlist.size(); // deterministic
-            phrase.append(wlist[idx]);
-        }
+        // Skip characters not in the map
+        if(!letterWordMap.contains(c)) continue;
+
+        QVector<QString> wlist = letterWordMap[c];
+        if(wlist.isEmpty()) continue; // safety check
+
+        int idx = (i*7) % wlist.size(); // deterministic
+        phrase.append(wlist[idx]);
     }
     return phrase.join("-");
 }
 
 
+// ----- Hash file -----
+QByteArray hashFile(const QString &path, QCryptographicHash::Algorithm algo){
+    QFile f(path);
+    if(!f.open(QFile::ReadOnly)) return QByteArray();
+    QCryptographicHash hash(algo);
+    while(!f.atEnd()) hash.addData(f.read(1<<20));
+    return hash.result();
+}
 
-// ----- Plain-text embed -----
+// ----- Plain-text embedding -----
 bool embedPlainText(const QString &src,const QString &funnyHash,const QString &platePhrase, QString &outpath){
     QFile in(src);
     if(!in.open(QFile::ReadOnly)) return false;
@@ -204,5 +258,4 @@ int main(int argc,char* argv[]){
     w.show();
     return a.exec();
 }
-
 #include "main.moc"
